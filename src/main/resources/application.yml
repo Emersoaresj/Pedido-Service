@@ -30,3 +30,11 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
 server:
   port: 8080
+
+estoque:
+  service:
+    url: ${ESTOQUE_SERVICE_URL:http://estoque-service:8083}
+
+pagamento:
+  service:
+    url: ${PAGAMENTO_SERVICE_URL:http://pagamento-service:8086}
