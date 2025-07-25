@@ -1,5 +1,7 @@
 package com.fiap.postech.pedido_receiver.api.consumer;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fiap.postech.pedido_receiver.domain.model.Pedido;
 import com.fiap.postech.pedido_receiver.domain.model.PedidoItem;
 import com.fiap.postech.pedido_receiver.api.dto.kafka.PedidoItemKafkaDTO;
@@ -18,8 +20,10 @@ import com.fiap.postech.pedido_receiver.gateway.port.PedidoItemRepositoryPort;
 import com.fiap.postech.pedido_receiver.gateway.port.PedidoServicePort;
 import com.fiap.postech.pedido_receiver.utils.ConstantUtils;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -47,13 +51,13 @@ public class PedidoReceiverConsumer {
 
 
     @KafkaListener(topics = TOPICO, groupId = GRUPO, containerFactory = "kafkaListenerContainerFactory")
-    public void processarPedido(PedidoKafkaDTO pedidoKafkaDTO) {
-        log.info("Recebido pedido do Kafka: {}", pedidoKafkaDTO);
+    public void processarPedido(ConsumerRecord<String, String> record, Acknowledgment ack) throws JsonProcessingException {
+        PedidoKafkaDTO dto = new ObjectMapper().readValue(record.value(), PedidoKafkaDTO.class);
 
         // 1. Buscar pedido e itens do pedido no banco
-        Pedido pedido = pedidoRepositoryPort.buscarPedidoPorId(pedidoKafkaDTO.getIdPedido());
+        Pedido pedido = pedidoRepositoryPort.buscarPedidoPorId(dto.getIdPedido());
         if (pedido == null) {
-            log.error("Pedido não encontrado: {}", pedidoKafkaDTO.getIdPedido());
+            log.error("Pedido não encontrado: {}", dto.getIdPedido());
             throw new PedidoNotFoundException(ConstantUtils.PEDIDO_NAO_ENCONTRADO);
         }
 
@@ -61,35 +65,36 @@ public class PedidoReceiverConsumer {
         pedido.setItens(pedidoItem);
 
         // 2. Validar e baixar estoque
-        PedidoBaixaEstoqueRequest baixaRequest = mapParaRequestEstoque(pedidoKafkaDTO.getItens());
+        PedidoBaixaEstoqueRequest baixaRequest = mapParaRequestEstoque(dto.getItens());
         PedidoBaixaEstoqueResponse resposta = estoqueClient.baixaEstoque(baixaRequest);
 
         if (!resposta.isSucesso()) {
             pedido.setStatusPedido(PedidoStatus.FECHADO_SEM_ESTOQUE);
-            pedidoServicePort.atualizaStatusPedido(pedidoKafkaDTO.getIdPedido(), PedidoStatus.FECHADO_SEM_ESTOQUE);
+            pedidoServicePort.atualizaStatusPedido(dto.getIdPedido(), PedidoStatus.FECHADO_SEM_ESTOQUE);
             log.info("Estoque insuficiente para pedido {}", pedido.getIdPedido());
             return;
         }
 
 
         // 3. Processar pagamento
-        PedidoPagamentoRequest requestPagamento = mapParaRequestPagamento(pedidoKafkaDTO);
+        PedidoPagamentoRequest requestPagamento = mapParaRequestPagamento(dto);
         PedidoPagamentoResponse pagamentoResponse = pagamentoClient.processarPagamento(requestPagamento);
 
         if (!pagamentoResponse.isAprovado()) {
             // Restabelece estoque se pagamento foi recusado
-            PedidoBaixaEstoqueRequest restauraRequest = mapParaRequestEstoque(pedidoKafkaDTO.getItens());
+            PedidoBaixaEstoqueRequest restauraRequest = mapParaRequestEstoque(dto.getItens());
             estoqueClient.restaurarEstoque(restauraRequest);
             pedido.setStatusPedido(PedidoStatus.FECHADO_SEM_CREDITO);
-            pedidoServicePort.atualizaStatusPedido(pedidoKafkaDTO.getIdPedido(), PedidoStatus.FECHADO_SEM_CREDITO);
+            pedidoServicePort.atualizaStatusPedido(dto.getIdPedido(), PedidoStatus.FECHADO_SEM_CREDITO);
             log.info("Pagamento recusado para pedido {}", pedido.getIdPedido());
             return;
         }
 
         // 4. Tudo OK
         pedido.setStatusPedido(PedidoStatus.FECHADO_COM_SUCESSO);
-        pedidoServicePort.atualizaStatusPedido(pedidoKafkaDTO.getIdPedido(), PedidoStatus.FECHADO_COM_SUCESSO);
+        pedidoServicePort.atualizaStatusPedido(dto.getIdPedido(), PedidoStatus.FECHADO_COM_SUCESSO);
         log.info("Pedido {} finalizado com sucesso", pedido.getIdPedido());
+        ack.acknowledge();
     }
 
     private PedidoBaixaEstoqueRequest mapParaRequestEstoque(List<PedidoItemKafkaDTO> itensKafka) {
