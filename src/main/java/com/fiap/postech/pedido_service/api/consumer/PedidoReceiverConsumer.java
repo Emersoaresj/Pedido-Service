@@ -52,49 +52,59 @@ public class PedidoReceiverConsumer {
 
     @KafkaListener(topics = TOPICO, groupId = GRUPO, containerFactory = "kafkaListenerContainerFactory")
     public void processarPedido(ConsumerRecord<String, String> record, Acknowledgment ack) throws JsonProcessingException {
-        PedidoKafkaDTO dto = new ObjectMapper().readValue(record.value(), PedidoKafkaDTO.class);
 
-        // 1. Buscar pedido e itens do pedido no banco
-        Pedido pedido = pedidoRepositoryPort.buscarPedidoPorId(dto.getIdPedido());
-        if (pedido == null) {
-            log.error("Pedido não encontrado: {}", dto.getIdPedido());
-            throw new PedidoNotFoundException(ConstantUtils.PEDIDO_NAO_ENCONTRADO);
+        try {
+
+
+            PedidoKafkaDTO dto = new ObjectMapper().readValue(record.value(), PedidoKafkaDTO.class);
+
+            // 1. Buscar pedido e itens do pedido no banco
+            Pedido pedido = pedidoRepositoryPort.buscarPedidoPorId(dto.getIdPedido());
+            if (pedido == null) {
+                log.error("Pedido não encontrado: {}", dto.getIdPedido());
+                throw new PedidoNotFoundException(ConstantUtils.PEDIDO_NAO_ENCONTRADO);
+            }
+
+            List<PedidoItem> pedidoItem = pedidoItemRepositoryPort.buscarItensPedido(pedido.getIdPedido());
+            pedido.setItens(pedidoItem);
+
+            // 2. Validar e baixar estoque
+            PedidoBaixaEstoqueRequest baixaRequest = mapParaRequestEstoque(dto.getItens());
+            PedidoBaixaEstoqueResponse resposta = estoqueClient.baixaEstoque(baixaRequest);
+
+            if (!resposta.isSucesso()) {
+                pedido.setStatusPedido(PedidoStatus.FECHADO_SEM_ESTOQUE);
+                pedidoServicePort.atualizaStatusPedido(dto.getIdPedido(), PedidoStatus.FECHADO_SEM_ESTOQUE);
+                log.info("Estoque insuficiente para pedido {}", pedido.getIdPedido());
+                ack.acknowledge();
+                return;
+            }
+
+
+            // 3. Processar pagamento
+            PedidoPagamentoRequest requestPagamento = mapParaRequestPagamento(dto);
+            PedidoPagamentoResponse pagamentoResponse = pagamentoClient.processarPagamento(requestPagamento);
+
+            if (!pagamentoResponse.isAprovado()) {
+                // Restabelece estoque se pagamento foi recusado
+                PedidoBaixaEstoqueRequest restauraRequest = mapParaRequestEstoque(dto.getItens());
+                estoqueClient.restaurarEstoque(restauraRequest);
+                pedido.setStatusPedido(PedidoStatus.FECHADO_SEM_CREDITO);
+                pedidoServicePort.atualizaStatusPedido(dto.getIdPedido(), PedidoStatus.FECHADO_SEM_CREDITO);
+                log.info("Pagamento recusado para pedido {}", pedido.getIdPedido());
+                ack.acknowledge();
+                return;
+            }
+
+            // 4. Tudo OK
+            pedido.setStatusPedido(PedidoStatus.FECHADO_COM_SUCESSO);
+            pedidoServicePort.atualizaStatusPedido(dto.getIdPedido(), PedidoStatus.FECHADO_COM_SUCESSO);
+            log.info("Pedido {} finalizado com sucesso", pedido.getIdPedido());
+            ack.acknowledge();
+        } catch (Exception e) {
+            log.error("Erro inesperado ao processar pedido: {}", e.getMessage(), e);
+            ack.acknowledge();
         }
-
-        List<PedidoItem> pedidoItem = pedidoItemRepositoryPort.buscarItensPedido(pedido.getIdPedido());
-        pedido.setItens(pedidoItem);
-
-        // 2. Validar e baixar estoque
-        PedidoBaixaEstoqueRequest baixaRequest = mapParaRequestEstoque(dto.getItens());
-        PedidoBaixaEstoqueResponse resposta = estoqueClient.baixaEstoque(baixaRequest);
-
-        if (!resposta.isSucesso()) {
-            pedido.setStatusPedido(PedidoStatus.FECHADO_SEM_ESTOQUE);
-            pedidoServicePort.atualizaStatusPedido(dto.getIdPedido(), PedidoStatus.FECHADO_SEM_ESTOQUE);
-            log.info("Estoque insuficiente para pedido {}", pedido.getIdPedido());
-            return;
-        }
-
-
-        // 3. Processar pagamento
-        PedidoPagamentoRequest requestPagamento = mapParaRequestPagamento(dto);
-        PedidoPagamentoResponse pagamentoResponse = pagamentoClient.processarPagamento(requestPagamento);
-
-        if (!pagamentoResponse.isAprovado()) {
-            // Restabelece estoque se pagamento foi recusado
-            PedidoBaixaEstoqueRequest restauraRequest = mapParaRequestEstoque(dto.getItens());
-            estoqueClient.restaurarEstoque(restauraRequest);
-            pedido.setStatusPedido(PedidoStatus.FECHADO_SEM_CREDITO);
-            pedidoServicePort.atualizaStatusPedido(dto.getIdPedido(), PedidoStatus.FECHADO_SEM_CREDITO);
-            log.info("Pagamento recusado para pedido {}", pedido.getIdPedido());
-            return;
-        }
-
-        // 4. Tudo OK
-        pedido.setStatusPedido(PedidoStatus.FECHADO_COM_SUCESSO);
-        pedidoServicePort.atualizaStatusPedido(dto.getIdPedido(), PedidoStatus.FECHADO_COM_SUCESSO);
-        log.info("Pedido {} finalizado com sucesso", pedido.getIdPedido());
-        ack.acknowledge();
     }
 
     private PedidoBaixaEstoqueRequest mapParaRequestEstoque(List<PedidoItemKafkaDTO> itensKafka) {
