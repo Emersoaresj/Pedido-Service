@@ -6,6 +6,6 @@ import lombok.Data;
 public class PedidoItemEstoqueBaixaDTO {
 
     private Integer idProduto;
-    private Integer quantidadeItem;
+    private Integer quantidade;
 }
 
