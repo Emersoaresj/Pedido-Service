@@ -112,7 +112,7 @@ public class PedidoReceiverConsumer {
         for (PedidoItemKafkaDTO item : itensKafka) {
             PedidoItemEstoqueBaixaDTO estoqueItem = new PedidoItemEstoqueBaixaDTO();
             estoqueItem.setIdProduto(item.getIdProduto());
-            estoqueItem.setQuantidadeItem(item.getQuantidadeItem());
+            estoqueItem.setQuantidade(item.getQuantidadeItem());
             itensEstoque.add(estoqueItem);
         }
         PedidoBaixaEstoqueRequest request = new PedidoBaixaEstoqueRequest();
