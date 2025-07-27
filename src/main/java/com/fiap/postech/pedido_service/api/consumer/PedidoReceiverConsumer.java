@@ -19,6 +19,7 @@ import com.fiap.postech.pedido_service.gateway.client.PedidoPagamentoClient;
 import com.fiap.postech.pedido_service.gateway.port.PedidoItemRepositoryPort;
 import com.fiap.postech.pedido_service.gateway.port.PedidoServicePort;
 import com.fiap.postech.pedido_service.utils.ConstantUtils;
+import feign.FeignException;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -83,15 +84,23 @@ public class PedidoReceiverConsumer {
 
             // 3. Processar pagamento
             PedidoPagamentoRequest requestPagamento = mapParaRequestPagamento(dto);
-            PedidoPagamentoResponse pagamentoResponse = pagamentoClient.processarPagamento(requestPagamento);
 
-            if (!pagamentoResponse.isAprovado()) {
-                // Restabelece estoque se pagamento foi recusado
-                PedidoBaixaEstoqueRequest restauraRequest = mapParaRequestEstoque(dto.getItens());
-                estoqueClient.restaurarEstoque(restauraRequest);
-                pedido.setStatusPedido(PedidoStatus.FECHADO_SEM_CREDITO);
-                pedidoServicePort.atualizaStatusPedido(dto.getIdPedido(), PedidoStatus.FECHADO_SEM_CREDITO);
-                log.info("Pagamento recusado para pedido {}", pedido.getIdPedido());
+            try {
+                PedidoPagamentoResponse pagamentoResponse = pagamentoClient.processarPagamento(requestPagamento);
+                if (!pagamentoResponse.isAprovado()) {
+                    // ...
+                }
+            } catch (FeignException e) {
+                if (e.status() == 402) {
+                    pedido.setStatusPedido(PedidoStatus.FECHADO_SEM_CREDITO);
+                    pedidoServicePort.atualizaStatusPedido(dto.getIdPedido(), PedidoStatus.FECHADO_SEM_CREDITO);
+                    log.info("Pagamento recusado (via exception) para pedido {}", pedido.getIdPedido());
+                    // Restabelece estoque
+                    PedidoBaixaEstoqueRequest restauraRequest = mapParaRequestEstoque(dto.getItens());
+                    estoqueClient.restaurarEstoque(restauraRequest);
+                } else {
+                    log.error("Erro inesperado ao processar pagamento: {}", e.getMessage(), e);
+                }
                 ack.acknowledge();
                 return;
             }
