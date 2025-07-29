@@ -101,6 +101,7 @@ O arquivo `src/main/resources/application.yml` define:
 - Conexão com PostgreSQL (ajustável por variáveis de ambiente).
 - Configuração do Kafka (bootstrap servers, consumer).
 - JPA configurado para atualização automática do schema e exibição de SQL.
+- Flyway para migrações automáticas do banco de dados.
 - Configuração dos serviços de estoque e pagamento, com as URLs dos serviços (ajustável por variável de ambiente).
 
 ---
